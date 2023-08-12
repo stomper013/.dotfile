@@ -31,3 +31,11 @@ sudo gem install colorls
 
 # Add plugins
 plugins=( git zsh-syntax-highlighting zsh-autosuggestions )
+
+# Install Font FireCode
+sudo add-apt-repository "deb http://archive.ubuntu.com/ubuntu $(lsb_release -sc) universe"
+sudo apt install fonts-firacode
+
+
+
+sudo apt update
