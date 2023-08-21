@@ -71,8 +71,22 @@ export NVM_DIR="$HOME/.nvm"
 # }
 # ------------------------------- #
 
+alias vport="sudo lsof -nP -iTCP -sTCP:LISTEN"
 # Docker #
 alias dps="docker ps"
+alias drmv="docker rmi $(docker images -a -q)"
+alias drmc="docker rm $(docker ps -a -f status=exited -q)"
+alias chmodAll="sudo chown -R $USER *"
+
+# scp hoangvh@35.240.149.182:/home/deploy/backup/dump_17-08-2023_06_44_30.sql ../backup/
+# alias postgresDump="docker exec -t postgres_db pg_dumpall -c -U postgres > dump_`date +%d-%m-%Y"_"%H_%M_%S`.sql"
+# alias postgresRestore="cat your_dump.sql | docker exec -i your-db-container psql -U postgres"
+
+function dpush(){
+  docker images -a | \
+  fzf | awk '{print $1}' | \
+  xargs -o -I % docker save % | ssh -C -i ~/.ssh/hoangStaging hoangvh@35.240.149.182 docker load
+}
 
 function dlogs(){
   docker ps | \
@@ -80,23 +94,28 @@ function dlogs(){
   xargs -o -I % docker logs -f % 
 }
 
-function dvol(){
-  docker ps | \
+function drvol(){
+  docker volume list | \
   fzf | awk '{print $1}' | \
-  xargs -o -I % docker container remove -f % 
-  xargs -o -I % docker rm volume -f % 
+  xargs -n2 docker volume rm -f %
 }
 
 function dc-up(){
   find $PWD -name 'docker-compose.*.yml' -type f | \
   fzf | awk '{print $1}' | \
-  xargs -o -I % docker-compose -f % up -d 
+  xargs -o -I % docker-compose -f % up --build -d 
+}
+
+function dc-build(){
+  find . -type d -wholename './apps/*' ! -path './apps/*/*' | \
+  fzf | awk '{print $1}' | \
+  xargs -o -I % docker-compose build --no-cache -f % 
 }
 
 function dc-down(){
   find $PWD -name 'docker-compose.*.yml' -type f | \
   fzf | awk '{print $1}' | \
-  xargs -o -I % docker-compose -f  down %
+  xargs -o -I % docker-compose -f % down
 }
 
 # Yarn #
@@ -110,10 +129,4 @@ function yb(){
   find . -type d -wholename './apps/*' ! -path './apps/*/*' | \
   fzf | cut -c 8- | awk '{print $1}' | \
   xargs -o -I % yarn run build %
-}
-
-# SSH #
-function ssh(){
-  find $HOME/.ssh -type f -name ! `*` | \
-  fzf | awk '{print $1}'
 }
