@@ -76,7 +76,7 @@ alias vport="sudo lsof -nP -iTCP -sTCP:LISTEN"
 alias dps="docker ps"
 alias drmv="docker rmi $(docker images -a -q)"
 alias drmc="docker rm $(docker ps -a -f status=exited -q)"
-alias chmodAll="sudo chown -R $USER *"
+alias chmodAll="  "
 
 # scp hoangvh@35.240.149.182:/home/deploy/backup/dump_17-08-2023_06_44_30.sql ../backup/
 # alias postgresDump="docker exec -t postgres_db pg_dumpall -c -U postgres > dump_`date +%d-%m-%Y"_"%H_%M_%S`.sql"
@@ -103,19 +103,19 @@ function drvol(){
 function dc-up(){
   find $PWD -name 'docker-compose.*.yml' -type f | \
   fzf | awk '{print $1}' | \
-  xargs -o -I % docker-compose -f % up --build -d 
+  xargs -o -I % docker compose -f % up --build -d 
 }
 
 function dc-build(){
   find . -type d -wholename './apps/*' ! -path './apps/*/*' | \
   fzf | awk '{print $1}' | \
-  xargs -o -I % docker-compose build --no-cache -f % 
+  xargs -o -I % docker compose build --no-cache -f % 
 }
 
 function dc-down(){
   find $PWD -name 'docker-compose.*.yml' -type f | \
   fzf | awk '{print $1}' | \
-  xargs -o -I % docker-compose -f % down
+  xargs -o -I % docker compose -f % down
 }
 
 # Yarn #
@@ -130,3 +130,8 @@ function yb(){
   fzf | cut -c 8- | awk '{print $1}' | \
   xargs -o -I % yarn run build %
 }
+
+export PATH=$PATH:/usr/local/go/bin
+export PATH=$PATH:$GOPATH/bin
+export PATH=$(go env GOPATH)/bin:$PATH
+export GO_PATH=~/go 
