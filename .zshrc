@@ -94,6 +94,12 @@ function dlogs(){
   xargs -o -I % docker logs -f % 
 }
 
+function dexec(){
+  docker ps | \
+  fzf | awk '{print $1}' | \
+  xargs -o -I % docker exec -it % bash 
+}
+
 function drvol(){
   docker volume list | \
   fzf | awk '{print $1}' | \
