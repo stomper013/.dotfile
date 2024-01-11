@@ -1,4 +1,4 @@
-export ZSH="$HOME/.oh-my-zsh"
+export ZSH="$HOME/.oh-my-zsh"https://github.com/stomper013/.dotfile/blob/master/.zshrc
 
 ZSH_THEME="robbyrussell"
 ZSH_TMUX_AUTOSTART=true
