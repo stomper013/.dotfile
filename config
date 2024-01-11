@@ -1,8 +1,35 @@
+#Git
 Host github.com
   User git
   HostName github.com
   IdentityFile ~/.ssh/id_rsa
+
 Host github.com-home
   User git
   HostName github.com
   IdentityFile ~/.ssh/stomper013
+
+#Local Laptop Company
+Host laptop-company
+  User hoang-sb
+  HostName 116.111.7.194
+
+#WORK
+Host xaca-dev
+  User hoangvh
+  HostName 34.142.164.67
+  IdentityFile ~/.ssh/xaca
+
+Host xaca-uat
+  User hoangvh
+  HostName 34.22.98.31
+  IdentityFile ~/.ssh/test
+
+#VPS
+Host vps-contabo
+  HostName 184.174.38.21
+  User root
+
+#GLOBAL VARIABLES
+Host *
+  IdentitiesOnly=yes
