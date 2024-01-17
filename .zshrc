@@ -1,4 +1,4 @@
-export ZSH="$HOME/.oh-my-zsh"https://github.com/stomper013/.dotfile/blob/master/.zshrc
+export ZSH="$HOME/.oh-my-zsh"
 
 ZSH_THEME="robbyrussell"
 ZSH_TMUX_AUTOSTART=true
@@ -91,7 +91,7 @@ function dpush(){
 function dlogs(){
   docker ps | \
   fzf | awk '{print $1}' | \
-  xargs -o -I % docker logs -f % 
+  xargs -o -I % docker logs -f --tail 10 % 
 }
 
 function dexec(){
