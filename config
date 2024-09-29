@@ -9,26 +9,16 @@ Host github.com-home
   HostName github.com
   IdentityFile ~/.ssh/stomper013
 
-#Local Laptop Company
-Host laptop-company
-  User hoang-sb
-  HostName 116.111.7.194
-
 #WORK
-Host xaca-dev
-  User hoangvh
-  HostName 34.142.164.67
-  IdentityFile ~/.ssh/xaca
+Host dev-onstocks
+  User ubuntu
+  HostName 47.129.211.240
+  IdentityFile ~/.ssh/dev.pem
 
-Host xaca-uat
-  User hoangvh
-  HostName 34.22.98.31
-  IdentityFile ~/.ssh/test
-
-#VPS
-Host vps-contabo
-  HostName 184.174.38.21
-  User root
+Host prod-onstocks
+  User ubuntu
+  HostName 47.129.211.240
+  IdentityFile ~/.ssh/production.pem
 
 #GLOBAL VARIABLES
 Host *
