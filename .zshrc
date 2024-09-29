@@ -137,7 +137,7 @@ function yb(){
   xargs -o -I % yarn run build %
 }
 
-export PATH=$PATH:/usr/local/go/bin
-export PATH=$PATH:$GOPATH/bin
-export PATH=$(go env GOPATH)/bin:$PATH
-export GO_PATH=~/go 
+#export PATH=$PATH:/usr/local/go/bin
+#export PATH=$PATH:$GOPATH/bin
+#export PATH=$(go env GOPATH)/bin:$PATH
+#export GO_PATH=~/go 
