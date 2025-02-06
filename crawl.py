@@ -1,6 +1,7 @@
 import logging
 from concurrent.futures import ThreadPoolExecutor
 import psycopg2
+from psycopg2 import pool
 from psycopg2.extras import execute_batch
 from vnstock import *
 import pandas as pd
@@ -10,6 +11,9 @@ from const import VN30, VN100
 import signal
 import pickle
 import os
+import time
+from dateutil.relativedelta import relativedelta
+from datetime import timedelta
 
 main_logger = logging.getLogger()
 main_logger.setLevel(logging.INFO)
@@ -33,6 +37,8 @@ DB_CONFIG = {
 
 CHUNK_SIZE = 1000
 MAX_WORKERS = 4
+MIN_CONNECTIONS = 1
+MAX_CONNECTIONS = 20
 
 _INTERVAL_MAP = {
     "1m": "1m",
@@ -42,9 +48,10 @@ _INTERVAL_MAP = {
 
 
 class StockDataProcessor:
+
     def __init__(self):
         self.vnstock = Vnstock()
-        self.conn = self._create_db_connection()
+        self.pool = self._create_connection_pool()
         self.log_dir = "logs"
         self.progress_file = os.path.join(self.log_dir, "progress.json")
         self.checkpoint_file = os.path.join(self.log_dir, "checkpoint.pkl")
@@ -56,11 +63,21 @@ class StockDataProcessor:
         self.is_running = True
         signal.signal(signal.SIGINT, self._signal_handler)
         signal.signal(signal.SIGTERM, self._signal_handler)
-
         os.makedirs(self.log_dir, exist_ok=True)
 
-    def _create_db_connection(self):
-        return psycopg2.connect(**DB_CONFIG)
+    def __del__(self):
+        if hasattr(self, "pool") and self.pool:
+            try:
+                self.pool.closeall()
+            except Exception:
+                pass
+
+    def _create_connection_pool(self):
+        return psycopg2.pool.SimpleConnectionPool(
+            MIN_CONNECTIONS,
+            MAX_CONNECTIONS,
+            **DB_CONFIG,  # min connections  # max connections
+        )
 
     def _setup_logger(self, symbol):
         symbol_log_dir = os.path.join(self.log_dir, symbol)
@@ -89,11 +106,14 @@ class StockDataProcessor:
 
     def _maintenance(self):
         tables = ["stock1d", "stock1h", "stock1m"]
+        logger = logging.getLogger()
 
-        if self.conn:
-            self.conn.close()
+        # Close all existing connections in the pool
+        if hasattr(self, "pool"):
+            self.pool.closeall()
 
         try:
+            # Create dedicated maintenance connection
             maintenance_conn = psycopg2.connect(**DB_CONFIG)
             maintenance_conn.autocommit = True
 
@@ -101,19 +121,19 @@ class StockDataProcessor:
                 for table in tables:
                     try:
                         cur.execute(f"VACUUM (VERBOSE, ANALYZE) {table};")
-                        logging.getLogger().info(f"Completed maintenance for {table}")
+                        logger.info(f"Completed maintenance for {table}")
                     except Exception as e:
-                        logging.getLogger().error(
-                            f"Maintenance error for {table}: {str(e)}"
-                        )
+                        logger.error(f"Maintenance error for {table}: {str(e)}")
 
         except Exception as e:
-            logging.getLogger().error(f"Error during maintenance: {str(e)}")
+            logger.error(f"Error during maintenance: {str(e)}")
 
         finally:
             if "maintenance_conn" in locals():
                 maintenance_conn.close()
-            self.conn = self._create_db_connection()
+
+            # Recreate the connection pool
+            self.pool = self._create_connection_pool()
 
     def _save_progress(self, completed_symbols):
         with open(self.progress_file, "w") as f:
@@ -227,92 +247,97 @@ class StockDataProcessor:
                 logger.error("No valid records to insert")
                 return 0
 
-            with self.conn.cursor() as cur:
-                # Create partitions
-                unique_months = df_chunk["datetime"].dt.to_period("M").unique()
-                for period in unique_months:
-                    start_date = period.to_timestamp()
-                    end_date = (period + 1).to_timestamp()
-                    partition_name = f"{table_name}_{start_date.strftime('%Y_%m')}"
+            conn = self.pool.getconn()
+            try:
+                with conn.cursor() as cur:
+                    # Create partitions
+                    unique_months = df_chunk["datetime"].dt.to_period("M").unique()
+                    for period in unique_months:
+                        start_date = period.to_timestamp()
+                        end_date = (period + 1).to_timestamp()
+                        partition_name = f"{table_name}_{start_date.strftime('%Y_%m')}"
 
+                        try:
+                            cur.execute(
+                                f"""
+                                DO $$
+                                BEGIN
+                                    IF NOT EXISTS (
+                                        SELECT 1 FROM pg_class c
+                                        JOIN pg_namespace n ON n.oid = c.relnamespace
+                                        WHERE c.relname = '{partition_name}'
+                                        AND n.nspname = 'public'
+                                    ) THEN
+                                        CREATE TABLE {partition_name}
+                                        PARTITION OF {table_name}
+                                        FOR VALUES FROM (%s) TO (%s);
+                                    END IF;
+                                END $$;
+                                """,
+                                (start_date, end_date),
+                            )
+                            conn.commit()
+                        except Exception as e:
+                            logger.error(
+                                f"Error creating partition {partition_name}: {str(e)}"
+                            )
+                            continue
+
+                    # Insert data
                     try:
+                        execute_batch(
+                            cur,
+                            f"""
+                            INSERT INTO {table_name}
+                                (ticker, datetime, open, high, low, close, volume)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                            ON CONFLICT (ticker, datetime) 
+                            DO UPDATE SET 
+                                open = EXCLUDED.open,
+                                high = EXCLUDED.high,
+                                low = EXCLUDED.low,
+                                close = EXCLUDED.close,
+                                volume = EXCLUDED.volume;
+                            """,
+                            data,
+                            page_size=CHUNK_SIZE,
+                        )
+
                         cur.execute(
                             f"""
-                            DO $$
-                            BEGIN
-                                IF NOT EXISTS (
-                                    SELECT 1 FROM pg_class c
-                                    JOIN pg_namespace n ON n.oid = c.relnamespace
-                                    WHERE c.relname = '{partition_name}'
-                                    AND n.nspname = 'public'
-                                ) THEN
-                                    CREATE TABLE {partition_name}
-                                    PARTITION OF {table_name}
-                                    FOR VALUES FROM (%s) TO (%s);
-                                END IF;
-                            END $$;
+                            SELECT COUNT(*) FROM {table_name}
+                            WHERE ticker = %s
+                            AND datetime BETWEEN %s AND %s;
                             """,
-                            (start_date, end_date),
+                            (symbol, chunk_info["start_time"], chunk_info["end_time"]),
                         )
-                        self.conn.commit()
+
+                        processed_count = cur.fetchone()[0]
+                        conn.commit()
+
+                        logger.info(
+                            f"Successfully processed {processed_count}/{chunk_info['record_count']} records "
+                            f"for {symbol} in {table_name} "
+                            f"(partition: {table_name}_{chunk_info['start_time'].strftime('%Y_%m')}) "
+                            f"from {chunk_info['start_time']} to {chunk_info['end_time']}"
+                        )
+
+                        if processed_count > 0:
+                            self.stats[table_name]["processed"] += processed_count
+                            if os.path.exists(self.checkpoint_file):
+                                os.remove(self.checkpoint_file)
+                        else:
+                            self.stats[table_name]["failed"] += len(data)
+
+                        return processed_count
+
                     except Exception as e:
-                        logger.error(
-                            f"Error creating partition {partition_name}: {str(e)}"
-                        )
-                        continue
+                        conn.rollback()
+                        logger.error(f"Error during data insertion: {str(e)}")
+                        raise
 
-                # Insert data
-                try:
-                    execute_batch(
-                        cur,
-                        f"""
-                        INSERT INTO {table_name}
-                            (ticker, datetime, open, high, low, close, volume)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (ticker, datetime) 
-                        DO UPDATE SET 
-                            open = EXCLUDED.open,
-                            high = EXCLUDED.high,
-                            low = EXCLUDED.low,
-                            close = EXCLUDED.close,
-                            volume = EXCLUDED.volume;
-                        """,
-                        data,
-                        page_size=CHUNK_SIZE,
-                    )
-
-                    cur.execute(
-                        f"""
-                        SELECT COUNT(*) FROM {table_name}
-                        WHERE ticker = %s
-                        AND datetime BETWEEN %s AND %s;
-                        """,
-                        (symbol, chunk_info["start_time"], chunk_info["end_time"]),
-                    )
-
-                    processed_count = cur.fetchone()[0]
-                    self.conn.commit()
-
-                    logger.info(
-                        f"Successfully processed {processed_count}/{chunk_info['record_count']} records "
-                        f"for {symbol} in {table_name} "
-                        f"(partition: {table_name}_{chunk_info['start_time'].strftime('%Y_%m')}) "
-                        f"from {chunk_info['start_time']} to {chunk_info['end_time']}"
-                    )
-
-                    if processed_count > 0:
-                        self.stats[table_name]["processed"] += processed_count
-                        if os.path.exists(self.checkpoint_file):
-                            os.remove(self.checkpoint_file)
-                    else:
-                        self.stats[table_name]["failed"] += len(data)
-
-                    return processed_count
-
-                except Exception as e:
-                    self.conn.rollback()
-                    logger.error(f"Error during data insertion: {str(e)}")
-                    raise
+            finally:
+                self.pool.putconn(conn)
 
         except Exception as e:
             logger.error(f"Error in _save_chunk: {str(e)}")
@@ -425,17 +450,21 @@ class StockDataProcessor:
 
 
 def main():
+    processor = None
     try:
         processor = StockDataProcessor()
-        symbols = VN30
+        symbols = ["FPT"]
         processor.process_symbols(symbols)
         processor._maintenance()
 
     except Exception as e:
         logging.getLogger().error(f"Main error: {str(e)}")
     finally:
-        if hasattr(processor, "conn") and processor.conn:
-            processor.conn.close()
+        if processor and hasattr(processor, "pool"):
+            try:
+                processor.pool.closeall()
+            except Exception as e:
+                logging.getLogger().error(f"Error closing connection pool: {str(e)}")
 
 
 if __name__ == "__main__":
