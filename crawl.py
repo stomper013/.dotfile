@@ -170,34 +170,95 @@ class StockDataProcessor:
             logging.error(f"Error loading checkpoint: {str(e)}")
         return None
 
+    def _get_last_datetime(self, symbol, table_name):
+        try:
+            conn = self.pool.getconn()
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT MAX(datetime) 
+                    FROM {table_name}
+                    WHERE ticker = %s
+                    """,
+                    (symbol,),
+                )
+                last_date = cur.fetchone()[0]
+                return last_date
+        except Exception as e:
+            logging.error(
+                f"Error getting last datetime for {symbol} in {table_name}: {str(e)}"
+            )
+            return None
+        finally:
+            self.pool.putconn(conn)
+
+    def _get_listing_date(self, symbol):
+        try:
+            stock_info = self.vnstock.stock(symbol=symbol, source="TCBS")
+            company_info = stock_info.company.overview()
+            if not company_info.empty and "established_year" in company_info.columns:
+                established_year = company_info["established_year"].iloc[0]
+                if pd.notna(established_year):
+                    start_date = datetime(int(established_year), 1, 1)
+                    return start_date
+
+            return datetime(2000, 1, 1)
+
+        except Exception as e:
+            return datetime(2000, 1, 1)
+
     def _process_symbol(self, symbol):
         loggers = self._setup_logger(symbol)
         try:
+            listing_date = self._get_listing_date(symbol)
             stock = self.vnstock.stock(symbol=symbol, source="VCI")
 
-            data = {
-                "stock1m": stock.quote.history(
-                    start="2000-01-01", end="2025-03-02", interval=_INTERVAL_MAP["1m"]
-                ),
-                "stock1h": stock.quote.history(
-                    start="2000-01-01", end="2025-03-02", interval=_INTERVAL_MAP["1h"]
-                ),
-                "stock1d": stock.quote.history(
-                    start="2000-01-01", end="2025-03-02", interval=_INTERVAL_MAP["1d"]
-                ),
+            last_dates = {
+                "stock1m": self._get_last_datetime(symbol, "stock1m"),
+                "stock1h": self._get_last_datetime(symbol, "stock1h"),
+                "stock1d": self._get_last_datetime(symbol, "stock1d"),
             }
 
-            for interval, df in data.items():
-                if df is not None and not df.empty:
-                    df["symbol"] = symbol
-                    for col in ["open", "high", "low", "close"]:
-                        df[col] = df[col].astype(float)
-                    df["volume"] = df["volume"].astype(int)
+            data = {}
+            for interval, table_name in [
+                ("1m", "stock1m"),
+                ("1h", "stock1h"),
+                ("1d", "stock1d"),
+            ]:
+                if last_dates[table_name]:
+                    start_date = last_dates[table_name]
                 else:
-                    loggers[interval].warning(
-                        f"No data found for {symbol} in {interval}"
+                    start_date = listing_date
+
+                if start_date < datetime.now():
+                    start_date_str = start_date.strftime("%Y-%m-%d")
+                    end_date = datetime.now()
+                    end_date_str = end_date.strftime("%Y-%m-%d")
+
+                    loggers[table_name].info(
+                        f"Fetching data for {symbol} from {start_date_str} to {end_date_str}"
                     )
-                    self.stats[interval]["failed"] += 1
+
+                    df = stock.quote.history(
+                        start=start_date_str,
+                        end=end_date_str,
+                        interval=_INTERVAL_MAP[interval],
+                    )
+
+                    if df is not None and not df.empty:
+                        df["symbol"] = symbol
+                        for col in ["open", "high", "low", "close"]:
+                            df[col] = df[col].astype(float)
+                        df["volume"] = df["volume"].astype(int)
+                        data[table_name] = df
+                        loggers[table_name].info(
+                            f"Retrieved {len(df)} records for {symbol} from {start_date_str} to {end_date_str}"
+                        )
+                    else:
+                        loggers[table_name].warning(
+                            f"No new data found for {symbol} in {table_name} from {start_date_str}"
+                        )
+                        self.stats[table_name]["failed"] += 1
 
             return data, loggers
 
@@ -384,7 +445,6 @@ class StockDataProcessor:
                                 total_records = len(df)
                                 processed_records = 0
 
-                                # Check checkpoint for resuming
                                 start_index = 0
                                 if (
                                     checkpoint
@@ -453,7 +513,7 @@ def main():
     processor = None
     try:
         processor = StockDataProcessor()
-        symbols = ["FPT"]
+        symbols = VN100
         processor.process_symbols(symbols)
         processor._maintenance()
 
