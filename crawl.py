@@ -32,6 +32,8 @@ DB_CONFIG = {
     "dbname": "stockgpt-trading",
     "user": "admin",
     "password": "dev",
+    # "user": "onstocks",
+    # "password": ".wHD0_Q]Xf')aq(b",
     "host": "localhost",
 }
 
@@ -211,6 +213,7 @@ class StockDataProcessor:
         loggers = self._setup_logger(symbol)
         try:
             listing_date = self._get_listing_date(symbol)
+            listing_date = pd.Timestamp(listing_date).tz_localize(None)
             stock = self.vnstock.stock(symbol=symbol, source="VCI")
 
             last_dates = {
@@ -219,7 +222,16 @@ class StockDataProcessor:
                 "stock1d": self._get_last_datetime(symbol, "stock1d"),
             }
 
+            for table_name in last_dates:
+                if last_dates[table_name] is not None:
+                    if last_dates[table_name].tzinfo is not None:
+                        last_dates[table_name] = pd.Timestamp(
+                            last_dates[table_name]
+                        ).tz_localize(None)
+
+            current_time = pd.Timestamp.now().tz_localize(None)
             data = {}
+
             for interval, table_name in [
                 ("1m", "stock1m"),
                 ("1h", "stock1h"),
@@ -230,10 +242,9 @@ class StockDataProcessor:
                 else:
                     start_date = listing_date
 
-                if start_date < datetime.now():
+                if start_date < current_time:
                     start_date_str = start_date.strftime("%Y-%m-%d")
-                    end_date = datetime.now()
-                    end_date_str = end_date.strftime("%Y-%m-%d")
+                    end_date_str = current_time.strftime("%Y-%m-%d")
 
                     loggers[table_name].info(
                         f"Fetching data for {symbol} from {start_date_str} to {end_date_str}"
@@ -244,7 +255,7 @@ class StockDataProcessor:
                         end=end_date_str,
                         interval=_INTERVAL_MAP[interval],
                     )
-
+                    print(df)
                     if df is not None and not df.empty:
                         df["symbol"] = symbol
                         for col in ["open", "high", "low", "close"]:
@@ -276,7 +287,9 @@ class StockDataProcessor:
         try:
             # Prepare data
             df_chunk = df_chunk.copy()
-            df_chunk["datetime"] = pd.to_datetime(df_chunk["time"]).dt.tz_localize(None)
+            df_chunk["datetime"] = pd.to_datetime(df_chunk["time"]).dt.tz_localize(
+                "UTC"
+            )
             df_chunk = df_chunk.sort_values("datetime")
 
             chunk_info = {
@@ -288,7 +301,6 @@ class StockDataProcessor:
             }
 
             logger.info(f"Processing chunk for {symbol} in {table_name}")
-            # Save checkpoint
             self._save_checkpoint(symbol, table_name, chunk_info)
 
             data = [
@@ -311,47 +323,82 @@ class StockDataProcessor:
             conn = self.pool.getconn()
             try:
                 with conn.cursor() as cur:
-                    # Create partitions
-                    unique_months = df_chunk["datetime"].dt.to_period("M").unique()
-                    for period in unique_months:
-                        start_date = period.to_timestamp()
-                        end_date = (period + 1).to_timestamp()
-                        partition_name = f"{table_name}_{start_date.strftime('%Y_%m')}"
-
-                        try:
-                            cur.execute(
-                                f"""
-                                DO $$
-                                BEGIN
-                                    IF NOT EXISTS (
-                                        SELECT 1 FROM pg_class c
-                                        JOIN pg_namespace n ON n.oid = c.relnamespace
-                                        WHERE c.relname = '{partition_name}'
-                                        AND n.nspname = 'public'
-                                    ) THEN
-                                        CREATE TABLE {partition_name}
-                                        PARTITION OF {table_name}
-                                        FOR VALUES FROM (%s) TO (%s);
-                                    END IF;
-                                END $$;
-                                """,
-                                (start_date, end_date),
+                    if table_name == "stock1m":
+                        unique_days = df_chunk["datetime"].dt.to_period("D").unique()
+                        for period in unique_days:
+                            start_date = period.to_timestamp()
+                            end_date = (period + 1).to_timestamp()
+                            partition_name = (
+                                f"{table_name}_{start_date.strftime('%Y_%m_%d')}"
                             )
-                            conn.commit()
-                        except Exception as e:
-                            logger.error(
-                                f"Error creating partition {partition_name}: {str(e)}"
-                            )
-                            continue
 
-                    # Insert data
+                            try:
+                                cur.execute(
+                                    f"""
+                                    DO $$
+                                    BEGIN
+                                        IF NOT EXISTS (
+                                            SELECT 1 FROM pg_class c
+                                            JOIN pg_namespace n ON n.oid = c.relnamespace
+                                            WHERE c.relname = '{partition_name}'
+                                            AND n.nspname = 'public'
+                                        ) THEN
+                                            CREATE TABLE {partition_name}
+                                            PARTITION OF {table_name}
+                                            FOR VALUES FROM (%s) TO (%s);
+                                        END IF;
+                                    END $$;
+                                    """,
+                                    (start_date, end_date),
+                                )
+                                conn.commit()
+                            except Exception as e:
+                                logger.error(
+                                    f"Error creating partition {partition_name}: {str(e)}"
+                                )
+                                continue
+                    else:
+                        unique_months = df_chunk["datetime"].dt.to_period("M").unique()
+                        for period in unique_months:
+                            start_date = period.to_timestamp()
+                            end_date = (period + 1).to_timestamp()
+                            partition_name = (
+                                f"{table_name}_{start_date.strftime('%Y_%m')}"
+                            )
+
+                            try:
+                                cur.execute(
+                                    f"""
+                                    DO $$
+                                    BEGIN
+                                        IF NOT EXISTS (
+                                            SELECT 1 FROM pg_class c
+                                            JOIN pg_namespace n ON n.oid = c.relnamespace
+                                            WHERE c.relname = '{partition_name}'
+                                            AND n.nspname = 'public'
+                                        ) THEN
+                                            CREATE TABLE {partition_name}
+                                            PARTITION OF {table_name}
+                                            FOR VALUES FROM (%s) TO (%s);
+                                        END IF;
+                                    END $$;
+                                    """,
+                                    (start_date, end_date),
+                                )
+                                conn.commit()
+                            except Exception as e:
+                                logger.error(
+                                    f"Error creating partition {partition_name}: {str(e)}"
+                                )
+                                continue
+
                     try:
                         execute_batch(
                             cur,
                             f"""
                             INSERT INTO {table_name}
                                 (ticker, datetime, open, high, low, close, volume)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                            VALUES (%s, %s::timestamptz, %s, %s, %s, %s, %s)
                             ON CONFLICT (ticker, datetime) 
                             DO UPDATE SET 
                                 open = EXCLUDED.open,
@@ -368,7 +415,7 @@ class StockDataProcessor:
                             f"""
                             SELECT COUNT(*) FROM {table_name}
                             WHERE ticker = %s
-                            AND datetime BETWEEN %s AND %s;
+                            AND datetime BETWEEN %s::timestamptz AND %s::timestamptz;
                             """,
                             (symbol, chunk_info["start_time"], chunk_info["end_time"]),
                         )
@@ -376,10 +423,13 @@ class StockDataProcessor:
                         processed_count = cur.fetchone()[0]
                         conn.commit()
 
+                        partition_format = (
+                            "%Y_%m_%d" if table_name == "stock1m" else "%Y_%m"
+                        )
                         logger.info(
                             f"Successfully processed {processed_count}/{chunk_info['record_count']} records "
                             f"for {symbol} in {table_name} "
-                            f"(partition: {table_name}_{chunk_info['start_time'].strftime('%Y_%m')}) "
+                            f"(partition: {table_name}_{chunk_info['start_time'].strftime(partition_format)}) "
                             f"from {chunk_info['start_time']} to {chunk_info['end_time']}"
                         )
 
@@ -513,7 +563,7 @@ def main():
     processor = None
     try:
         processor = StockDataProcessor()
-        symbols = VN100
+        symbols = ['ACB']
         processor.process_symbols(symbols)
         processor._maintenance()
 
