@@ -255,7 +255,7 @@ class StockDataProcessor:
                         end=end_date_str,
                         interval=_INTERVAL_MAP[interval],
                     )
-                    print(df)
+
                     if df is not None and not df.empty:
                         df["symbol"] = symbol
                         for col in ["open", "high", "low", "close"]:
@@ -287,8 +287,11 @@ class StockDataProcessor:
         try:
             # Prepare data
             df_chunk = df_chunk.copy()
-            df_chunk["datetime"] = pd.to_datetime(df_chunk["time"]).dt.tz_localize(
-                "UTC"
+            df_chunk["datetime"] = (
+                pd.to_datetime(df_chunk["time"])
+                .dt.tz_localize("Asia/Ho_Chi_Minh")
+                .dt.tz_convert("UTC")
+                .dt.tz_localize(None)
             )
             df_chunk = df_chunk.sort_values("datetime")
 
@@ -563,7 +566,7 @@ def main():
     processor = None
     try:
         processor = StockDataProcessor()
-        symbols = ['ACB']
+        symbols = VN100
         processor.process_symbols(symbols)
         processor._maintenance()
 
